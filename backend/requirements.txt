@@ -3,9 +3,14 @@ uvicorn==0.24.0
 datasets==2.14.5
 pydantic==2.4.2
 python-dotenv==1.0.0
+openai>=1.0.0
+sqlalchemy>=1.4.0
+aiosqlite>=0.19.0
 
 # Development dependencies
 black==23.3.0
 pylint==2.17.3
 pytest==7.3.1
-pytest-cov==4.1.0 
+pytest-cov==4.1.0
+
+classla>=1.1.0  # Slovenian NLP toolkit 
