@@ -19,8 +19,7 @@ RUN mkdir -p /app/data && \
 COPY ./app ./app
 COPY .env .env
 
-# Don't change to nobody user since we need root access for stanza_resources
-# RUN chown -R nobody:nogroup /app
-# USER nobody
+RUN mkdir -p /root/classla_resources
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Change the CMD to use reload mode
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"] 

@@ -26,3 +26,5 @@ yarn-error.log*
 # Docker
 .docker/ 
 backend/.env
+backend/text_processor/classla_resources/
+backend/text_processor/__pycache__/
