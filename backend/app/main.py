@@ -162,17 +162,17 @@ def get_instruction_prefix(
 ) -> str:
     if is_bullet:
         if summary_category == "ultra_concise":
-            return f"Naredi {num_bullet_points} kraih alinej iz besedila. Naj bodo izjemno kratke in jedrnate."
+            return f"Naredi 1 kraih alinej iz besedila. Naj bodo izjemno kratke in jedrnate."
         elif summary_category == "concise":
-            return f"Pretvori besedilo v {num_bullet_points} alinej. Naj bodo kratke in jasne."
+            return f"Pretvori besedilo v 2 alinej. Naj bodo kratke in jasne."
         elif summary_category == "short":
-            return f"Ustvari {num_bullet_points} alinej iz besedila, z nekoliko več podrobnosti."
+            return f"Ustvari 3 alinej iz besedila, z nekoliko več podrobnosti."
         elif summary_category == "medium":
-            return f"Naredi {num_bullet_points} alinej iz besedila z zmerno količino podrobnosti."
+            return f"Naredi 4 alinej iz besedila z zmerno količino podrobnosti."
         elif summary_category == "long":
-            return f"Razčleni besedilo v {num_bullet_points} alinej z več podrobnostmi in razširjenimi pojasnili."
+            return f"Razčleni besedilo v 5 alinej z več podrobnostmi in razširjenimi pojasnili."
         else:
-            return f"Razvij {num_bullet_points} alinej iz besedila, pri čemer vključuješ poglobljene informacije in podrobne razlage."
+            return f"Razvij 6 alinej iz besedila, pri čemer vključuješ poglobljene informacije in podrobne razlage."
     else:
         if summary_category == "ultra_concise":
             return "Zgoščeno povzemite glavno idejo v eni sami, osrednji misli. Povzetek naj bo čim krajši."
@@ -462,16 +462,19 @@ class ChatRequest(BaseModel):
     api_endpoint: Optional[str] = None
     is_bullet: bool
     summary_category: str
-    instruction_prefix: str
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, ge=1)
-    top_k: int = Field(default=50, ge=0, description="Limits the number of tokens to consider for sampling")
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Nucleus sampling threshold")
-    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0, description="Penalizes frequent tokens")
-
-
-class ChatResponse(BaseModel):
-    summary: str
+    top_k: int = Field(
+        default=50,
+        ge=0,
+        description="Limits the number of tokens to consider for sampling",
+    )
+    top_p: float = Field(
+        default=0.9, ge=0.0, le=1.0, description="Nucleus sampling threshold"
+    )
+    frequency_penalty: float = Field(
+        default=0.0, ge=-2.0, le=2.0, description="Penalizes frequent tokens"
+    )
 
 
 @app.post("/api/chat")
@@ -483,12 +486,11 @@ async def generate_chat_response(request: ChatRequest):
         logger.info(f"API endpoint: {request.api_endpoint}")
         logger.info(f"Is bullet: {request.is_bullet}")
         logger.info(f"Summary category: {request.summary_category}")
-        logger.info(f"Instruction prefix: {request.instruction_prefix}")
         logger.info(f"Temperature: {request.temperature}")
         logger.info(f"Max tokens: {request.max_tokens}")
         logger.info(f"Top K: {request.top_k}")
         logger.info(f"Top P: {request.top_p}")
-        logger.info(f"Frequency penalty: {request.frequency_penalty}")  
+        logger.info(f"Frequency penalty: {request.frequency_penalty}")
 
         # Use the default OpenAI endpoint if none provided
         api_endpoint = request.api_endpoint or OPENAI_API_BASE
@@ -496,13 +498,19 @@ async def generate_chat_response(request: ChatRequest):
         api_endpoint = api_endpoint.rstrip("/") + "/v1/chat/completions"
         logger.info(f"Using API endpoint: {api_endpoint}")
 
+        instruction_prefix = get_instruction_prefix(
+            request.is_bullet, request.summary_category
+        )
+
+        print(f"Instruction prefix: {instruction_prefix}")
+
         # Prepare the OpenAI-compatible payload with the provided parameters
         payload = {
             "model": app.current_model,  # Use the current model instead of hardcoded value
             "messages": [
                 {
                     "role": "user",
-                    "content": f"{request.instruction_prefix}\n\n{request.input_text}",
+                    "content": f"{instruction_prefix}\n\n{request.input_text}",
                 }
             ],
             "temperature": request.temperature,
@@ -636,14 +644,16 @@ async def switch_model(request: ModelSwitchRequest):
 
             api_endpoint = request.api_endpoint.strip()
             switch_url = f"{api_endpoint.rstrip('/')}/switch_model/{request.model_name}"
-            
+
             async def generate():
                 try:
                     async with httpx.AsyncClient(verify=True, timeout=120.0) as client:
                         async with client.stream(
-                            "POST", 
+                            "POST",
                             switch_url,
-                            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
+                            headers={
+                                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"
+                            },
                         ) as response:
                             if response.status_code != 200:
                                 error_msg = await response.text()
@@ -655,12 +665,12 @@ async def switch_model(request: ModelSwitchRequest):
                                 if line:
                                     # Forward the SSE line as-is
                                     yield f"{line}\n\n"
-                                    
+
                                     # Update current model if success message received
                                     try:
-                                        if line.startswith('data: '):
+                                        if line.startswith("data: "):
                                             data = json.loads(line[6:])
-                                            if data.get('status') == 'success':
+                                            if data.get("status") == "success":
                                                 app.current_model = request.model_name
                                     except json.JSONDecodeError:
                                         continue

@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Input } from "../components/ui/input";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { Wand2, CornerDownLeft, Settings2 } from "lucide-react";
+import { Wand2, CornerDownLeft, Settings2, EyeIcon, EyeOffIcon } from "lucide-react";
 import ModelSelector from "../components/ModelSelector";
 import {
   Dialog,
@@ -48,6 +48,11 @@ function ChatPage() {
     topP: 0.9,
     frequencyPenalty: 0.0,
   });
+  const [completionTokens, setCompletionTokens] = useState(0);
+  const [showHighlighting, setShowHighlighting] = useState(false);
+  const [wordAnalysis, setWordAnalysis] = useState([]);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisCache, setAnalysisCache] = useState(new Map());
 
   // Save API endpoint to localStorage whenever it changes
   useEffect(() => {
@@ -69,9 +74,9 @@ function ChatPage() {
     setIsLoading(true);
     setError(null);
     setSummary(''); // Clear existing summary
+    setCompletionTokens(0); // Reset tokens
 
     try {
-      const instruction = getInstructionPrefix(isBullet, category);
       
       const response = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
@@ -83,7 +88,6 @@ function ChatPage() {
           api_endpoint: apiEndpoint,
           is_bullet: isBullet,
           summary_category: category,
-          instruction_prefix: instruction,
           model: selectedModel,
           temperature: advancedParams.temperature,
           max_tokens: advancedParams.maxTokens,
@@ -110,9 +114,22 @@ function ChatPage() {
         
         for (const line of lines) {
           if (line.startsWith('data: ')) {
+            // Handle completion message
+            if (line.includes('"finish_reason":"stop"')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.usage?.completion_tokens) {
+                  setCompletionTokens(data.usage.completion_tokens);
+                }
+                continue;
+              } catch (e) {
+                console.error('Error parsing completion data:', e);
+              }
+            }
+
+            // Handle regular content
             try {
               const data = JSON.parse(line.slice(6));
-              
               if (data.error) {
                 setError(data.error);
                 break;
@@ -177,6 +194,81 @@ function ChatPage() {
       handleGenerateSummary();
     }
   };
+
+  const analyzeText = async (text) => {
+    const cacheKey = `${inputText}_${text}`;
+    
+    if (analysisCache.has(cacheKey)) {
+      setWordAnalysis(analysisCache.get(cacheKey));
+      return;
+    }
+
+    try {
+      setAnalysisLoading(true);
+      const response = await fetch(`${API_URL}/analyze-text`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          original_text: inputText,
+          summary_text: text
+        })
+      });
+      
+      const data = await response.json();
+      setAnalysisCache(prev => new Map(prev).set(cacheKey, data.analysis));
+      setWordAnalysis(data.analysis);
+    } catch (error) {
+      console.error('Error analyzing text:', error);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const getHighlightedText = () => {
+    if (!showHighlighting || !wordAnalysis.length) return [summary];
+
+    const result = [];
+    let currentPos = 0;
+    
+    wordAnalysis.forEach((analysis) => {
+      const word = analysis.word;
+      const pos = summary.indexOf(word, currentPos);
+      
+      if (pos === -1) return;
+      
+      if (pos > currentPos) {
+        result.push(summary.slice(currentPos, pos));
+      }
+      
+      const className = analysis.found_in_original 
+        ? 'bg-green-100 text-green-800 px-0.5 rounded' 
+        : 'bg-red-100 text-red-800 px-0.5 rounded';
+      
+      result.push({
+        props: {
+          className,
+          title: `${analysis.lemma} (${analysis.pos})`,
+          children: word
+        }
+      });
+      
+      currentPos = pos + word.length;
+    });
+    
+    if (currentPos < summary.length) {
+      result.push(summary.slice(currentPos));
+    }
+    
+    return result;
+  };
+
+  useEffect(() => {
+    if (showHighlighting && summary) {
+      analyzeText(summary);
+    }
+  }, [showHighlighting, summary]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -378,11 +470,48 @@ function ChatPage() {
           {/* Summary Card */}
           <Card className="h-[42vh] flex flex-col">
             <CardHeader className="py-2 border-b">
-              <CardTitle className="text-xl font-semibold">Generated Summary</CardTitle>
+              <div className="flex justify-between items-center">
+                <CardTitle className="text-xl font-semibold">Generated Summary</CardTitle>
+                <div className="flex items-center gap-2">
+                  {analysisLoading && (
+                    <div className="text-sm text-gray-500 animate-pulse">
+                      Analyzing...
+                    </div>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowHighlighting(prev => !prev)}
+                    className="p-1 h-8 w-8"
+                    title={showHighlighting ? "Hide word matching" : "Show word matching"}
+                    disabled={analysisLoading}
+                  >
+                    {showHighlighting ? (
+                      <EyeOffIcon className="h-4 w-4" />
+                    ) : (
+                      <EyeIcon className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="flex-grow p-0 relative">
-              {error ? (
-                <div className="text-red-500 p-4 text-sm">{error}</div>
+              {showHighlighting ? (
+                <div 
+                  className="h-full w-full p-2 overflow-auto whitespace-pre-wrap text-sm"
+                  style={{
+                    fontFamily: 'inherit',
+                    lineHeight: '1.5',
+                  }}
+                  dangerouslySetInnerHTML={{ __html: 
+                    wordAnalysis.length ? 
+                      getHighlightedText().map(span => 
+                        typeof span === 'string' ? span : 
+                        `<span class="${span.props.className}" title="${span.props.title || ''}">${span.props.children}</span>`
+                      ).join('') 
+                      : summary 
+                  }}
+                />
               ) : (
                 <Textarea
                   value={summary}
@@ -397,7 +526,7 @@ function ChatPage() {
                 />
               )}
               <div className="absolute bottom-2 right-2 text-xs text-gray-400">
-                {countWords(summary)} words
+                {countWords(summary)} words • {completionTokens} tokens
               </div>
             </CardContent>
           </Card>
