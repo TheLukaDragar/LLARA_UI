@@ -6,6 +6,7 @@ import time
 from asyncio import Lock
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import classla
 import httpx
@@ -35,8 +36,7 @@ app = FastAPI()
 
 # Enable CORS
 allowed_origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
+    "*",
 ]
 
 app.add_middleware(
@@ -465,6 +465,9 @@ class ChatRequest(BaseModel):
     instruction_prefix: str
     temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, ge=1)
+    top_k: int = Field(default=50, ge=0, description="Limits the number of tokens to consider for sampling")
+    top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Nucleus sampling threshold")
+    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0, description="Penalizes frequent tokens")
 
 
 class ChatResponse(BaseModel):
@@ -483,6 +486,9 @@ async def generate_chat_response(request: ChatRequest):
         logger.info(f"Instruction prefix: {request.instruction_prefix}")
         logger.info(f"Temperature: {request.temperature}")
         logger.info(f"Max tokens: {request.max_tokens}")
+        logger.info(f"Top K: {request.top_k}")
+        logger.info(f"Top P: {request.top_p}")
+        logger.info(f"Frequency penalty: {request.frequency_penalty}")  
 
         # Use the default OpenAI endpoint if none provided
         api_endpoint = request.api_endpoint or OPENAI_API_BASE
@@ -501,6 +507,9 @@ async def generate_chat_response(request: ChatRequest):
             ],
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
+            "top_k": request.top_k,
+            "top_p": request.top_p,
+            "frequency_penalty": request.frequency_penalty,
             "stream": True,  # Enable streaming
         }
         logger.debug(f"Prepared payload: {json.dumps(payload, indent=2)}")
@@ -574,6 +583,7 @@ async def get_models(request: ModelsRequest):
 
         # Basic URL validation
         from urllib.parse import urlparse
+
         parsed_url = urlparse(api_endpoint)
         if not all([parsed_url.scheme, parsed_url.netloc]):
             raise ValueError(f"Invalid URL format: {api_endpoint}")
@@ -585,7 +595,7 @@ async def get_models(request: ModelsRequest):
             response = await client.get(
                 to_call,
                 headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
-                timeout=30.0
+                timeout=30.0,
             )
 
             if response.status_code != 200:
@@ -614,7 +624,6 @@ class ModelSwitchRequest(BaseModel):
 @app.post("/switch_model")
 async def switch_model(request: ModelSwitchRequest):
     try:
-        # Prevent concurrent model switches
         if app.model_switch_lock.locked():
             raise HTTPException(
                 status_code=409,
@@ -622,94 +631,97 @@ async def switch_model(request: ModelSwitchRequest):
             )
 
         async with app.model_switch_lock:
-            logger.info(f"Switching to model: {request.model_name}")
-
-            # Don't switch if it's already the current model
-            if request.model_name == app.current_model:
-                return {
-                    "status": "unchanged",
-                    "model": request.model_name,
-                    "message": "Model is already active",
-                }
-
-            # Verify API key
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise HTTPException(
-                    status_code=500, detail="OpenAI API key not configured"
-                )
-
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-
-            # Validate API endpoint URL
             if not request.api_endpoint:
                 raise ValueError("API endpoint is required")
 
             api_endpoint = request.api_endpoint.strip()
-            from urllib.parse import urlparse
-            parsed_url = urlparse(api_endpoint)
-            if not all([parsed_url.scheme, parsed_url.netloc]):
-                raise ValueError(f"Invalid URL format: {api_endpoint}")
+            switch_url = f"{api_endpoint.rstrip('/')}/switch_model/{request.model_name}"
+            
+            async def generate():
+                try:
+                    async with httpx.AsyncClient(verify=True, timeout=120.0) as client:
+                        async with client.stream(
+                            "POST", 
+                            switch_url,
+                            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
+                        ) as response:
+                            if response.status_code != 200:
+                                error_msg = await response.text()
+                                yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                                return
 
-            # Fetch available models
-            models_url = f"{api_endpoint.rstrip('/')}/models"
-            logger.info(f"Fetching models from: {models_url}")
+                            # Pass through the streaming response
+                            async for line in response.aiter_lines():
+                                if line:
+                                    # Forward the SSE line as-is
+                                    yield f"{line}\n\n"
+                                    
+                                    # Update current model if success message received
+                                    try:
+                                        if line.startswith('data: '):
+                                            data = json.loads(line[6:])
+                                            if data.get('status') == 'success':
+                                                app.current_model = request.model_name
+                                    except json.JSONDecodeError:
+                                        continue
 
-            async with httpx.AsyncClient(verify=True, timeout=30.0) as client:
-                response = await client.get(models_url, headers=headers)
+                except Exception as e:
+                    logger.error(f"Error during model switch: {str(e)}")
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"Failed to fetch models: {response.text}",
-                    )
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
 
-                available_models = response.json()["models"]
-                logger.info(f"Available models: {available_models}")
-                
-                if request.model_name not in available_models:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Model {request.model_name} not found or not accessible",
-                    )
-
-                # Switch the model
-                switch_url = f"{api_endpoint.rstrip('/')}/switch_model/{request.model_name}"
-                logger.info(f"Switching model using URL: {switch_url}")
-                
-                response = await client.post(switch_url, headers=headers)
-
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"Failed to switch model: {response.text}",
-                    )
-
-                # Update the current model
-                app.current_model = request.model_name
-                logger.info(f"Successfully switched to model: {request.model_name}")
-
-                return {
-                    "status": "success",
-                    "model": request.model_name,
-                    "message": "Model successfully switched",
-                }
-
-    except ValueError as e:
-        logger.error(f"URL validation error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error during model switch: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Error during model switch: {str(e)}"
-        )
+        logger.error(f"Error in switch_model: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/current_model")
-async def get_current_model():
-    return {"model": app.current_model}
+class ModelInfoRequest(BaseModel):
+    api_endpoint: str
+
+
+@app.post(
+    "/current_model",
+    response_model=Dict[str, str],
+    responses={200: {"model": "str", "checkpoint_dir": "str"}},
+)
+async def get_current_model(request: ModelInfoRequest) -> Dict[str, str]:
+    """Get current model info from LLM service."""
+    try:
+        # Validate URL
+        url = request.api_endpoint.strip()
+        if not all([x for x in urlparse(url)[0:2]]):
+            raise HTTPException(status_code=400, detail="Invalid URL")
+
+        # Make request with increased timeout and better error handling
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0)
+        ) as client:
+            try:
+                response = await client.get(
+                    f"{url.rstrip('/')}/current_model",
+                    headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}"},
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                logger.error(f"Timeout while connecting to LLM service at {url}")
+                raise HTTPException(
+                    status_code=504, detail="Timeout while connecting to LLM service"
+                )
+            except httpx.ConnectError:
+                logger.error(f"Failed to connect to LLM service at {url}")
+                raise HTTPException(
+                    status_code=503, detail="Could not connect to LLM service"
+                )
+
+    except httpx.HTTPError as e:
+        logger.error(f"LLM service error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch model info")

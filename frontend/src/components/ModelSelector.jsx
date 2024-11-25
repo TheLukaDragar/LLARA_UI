@@ -14,6 +14,7 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
   const [models, setModels] = useState([]);
   const [currentModel, setCurrentModel] = useState('');
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -28,32 +29,46 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
     
     try {
       setLoading(true);
-      const response = await fetch(`${API_URL}/api/models`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          api_endpoint: apiEndpoint
+      const [modelsResponse, currentModelResponse] = await Promise.all([
+        fetch(`${API_URL}/api/models`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            api_endpoint: apiEndpoint
+          }),
         }),
-      });
+        fetch(`${API_URL}/current_model`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            api_endpoint: apiEndpoint
+          }),
+        })
+      ]);
 
-      if (!response.ok) {
-        throw new Error('Failed to fetch models');
+      if (!modelsResponse.ok || !currentModelResponse.ok) {
+        throw new Error('Failed to fetch models or current model');
       }
 
-      const data = await response.json();
-      const modelsArray = data.models || [];
+      const [modelsData, currentModelData] = await Promise.all([
+        modelsResponse.json(),
+        currentModelResponse.json()
+      ]);
+
+      const modelsArray = modelsData.models || [];
       const formattedModels = modelsArray
         .sort((a, b) => a.localeCompare(b))
         .map(model => ({ id: model }));
       
       setModels(formattedModels);
       
-      // Set current model and notify parent
-      if (data.current_model) {
-        setCurrentModel(data.current_model);
-        onModelChange?.(data.current_model);
+      if (currentModelData.current_model) {
+        setCurrentModel(currentModelData.current_model);
+        onModelChange?.(currentModelData.current_model);
       } else if (formattedModels.length > 0) {
         setCurrentModel(formattedModels[0].id);
         onModelChange?.(formattedModels[0].id);
@@ -69,6 +84,7 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
   const handleModelChange = async (modelId) => {
     try {
       setLoading(true);
+      setProgress(0);
       setCurrentModel(modelId);
       onModelChange?.(modelId);
       
@@ -84,34 +100,75 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to switch model');
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // Append new data to buffer
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete events from buffer
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+
+        for (const line of lines) {
+          if (!line.trim() || !line.startsWith('data: ')) continue;
+
+          try {
+            const jsonStr = line.slice(6); // Remove 'data: ' prefix
+            const data = JSON.parse(jsonStr);
+            
+            if (data.error) {
+              throw new Error(data.error);
+            }
+
+            if (data.status === 'progress') {
+              setProgress(data.total_progress);
+            } else if (data.status === 'success') {
+              setCurrentModel(data.model);
+              onModelChange?.(data.model);
+              return;
+            } else if (data.status === 'unchanged') {
+              console.log('Model is already active:', data.model);
+              return;
+            }
+          } catch (e) {
+            console.error('Error parsing SSE data:', e, 'Line:', line);
+          }
+        }
       }
     } catch (err) {
       console.error('Error switching model:', err);
       setError(err.message || 'Failed to switch model');
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
-  if (error) {
-    return (
-      <div className="flex items-center space-x-2">
-        <div className="text-red-500 text-sm">{error}</div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            setError(null);
-            fetchModels();
-          }}
-        >
-          Retry
-        </Button>
-      </div>
-    );
-  }
+  const getSelectText = () => {
+    if (loading && progress !== null) {
+      return `${progress}%`;
+    }
+    if (loading) {
+      return 'Loading...';
+    }
+    return currentModel || 'Select Model';
+  };
+
+  const getButtonText = () => {
+    if (loading && progress !== null) {
+      return `${progress}%`;
+    }
+    return 'Refresh';
+  };
 
   return (
     <div className="flex items-center space-x-2">
@@ -121,7 +178,7 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
         disabled={loading}
       >
         <SelectTrigger className="w-[200px]">
-          <SelectValue placeholder={loading ? "Loading..." : "Select Model"} />
+          <SelectValue placeholder={getSelectText()} />
         </SelectTrigger>
         <SelectContent>
           {models.map((model) => (
@@ -137,10 +194,10 @@ const ModelSelector = ({ apiEndpoint, onModelChange }) => {
         onClick={fetchModels}
         disabled={loading}
       >
-        {loading ? 'Loading...' : 'Refresh'}
+        {getButtonText()}
       </Button>
     </div>
   );
 };
 
-export default ModelSelector; 
+export default ModelSelector;

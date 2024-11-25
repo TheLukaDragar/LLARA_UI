@@ -5,8 +5,24 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Input } from "../components/ui/input";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { Wand2, CornerDownLeft } from "lucide-react";
+import { Wand2, CornerDownLeft, Settings2 } from "lucide-react";
 import ModelSelector from "../components/ModelSelector";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../components/ui/dialog";
+import { Slider } from "../components/ui/slider";
+
+const DEFAULT_ADVANCED_PARAMS = {
+  temperature: 0.3,
+  maxTokens: 2048,
+  topK: 50,
+  topP: 0.9,
+  frequencyPenalty: 0.0,
+};
 
 function ChatPage() {
   const [inputText, setInputText] = useState('');
@@ -25,6 +41,13 @@ function ChatPage() {
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(1000);
   const [selectedModel, setSelectedModel] = useState('');
+  const [advancedParams, setAdvancedParams] = useState({
+    temperature: 0.3,
+    maxTokens: 2048,
+    topK: 50,
+    topP: 0.9,
+    frequencyPenalty: 0.0,
+  });
 
   // Save API endpoint to localStorage whenever it changes
   useEffect(() => {
@@ -61,9 +84,12 @@ function ChatPage() {
           is_bullet: isBullet,
           summary_category: category,
           instruction_prefix: instruction,
-          temperature: temperature,
-          max_tokens: maxTokens,
-          model: selectedModel
+          model: selectedModel,
+          temperature: advancedParams.temperature,
+          max_tokens: advancedParams.maxTokens,
+          top_k: advancedParams.topK,
+          top_p: advancedParams.topP,
+          frequency_penalty: advancedParams.frequencyPenalty,
         })
       });
 
@@ -183,8 +209,96 @@ function ChatPage() {
 
             {/* Parameters Card */}
             <Card className="flex-[2] flex flex-col">
-              <CardHeader className="py-2 border-b">
+              <CardHeader className="py-2 border-b flex flex-row items-center justify-between">
                 <CardTitle className="text-lg font-semibold">Parameters</CardTitle>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                      <Settings2 className="h-4 w-4" />
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader className="flex flex-row items-center justify-between">
+                      <DialogTitle>Advanced Parameters</DialogTitle>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => setAdvancedParams(DEFAULT_ADVANCED_PARAMS)}
+                        className="text-xs"
+                      >
+                        Reset to Default
+                      </Button>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      {[
+                        { 
+                          label: "Temperature", 
+                          key: "temperature", 
+                          min: 0, 
+                          max: 2, 
+                          step: 0.1,
+                          tooltip: "Controls randomness in the output" 
+                        },
+                        { 
+                          label: "Max Tokens", 
+                          key: "maxTokens", 
+                          min: 1, 
+                          max: 4096, 
+                          step: 1,
+                          tooltip: "Maximum length of generated text" 
+                        },
+                        { 
+                          label: "Top K", 
+                          key: "topK", 
+                          min: 0, 
+                          max: 100, 
+                          step: 1,
+                          tooltip: "Limits token consideration for sampling" 
+                        },
+                        { 
+                          label: "Top P", 
+                          key: "topP", 
+                          min: 0, 
+                          max: 1, 
+                          step: 0.1,
+                          tooltip: "Nucleus sampling threshold" 
+                        },
+                        { 
+                          label: "Frequency Penalty", 
+                          key: "frequencyPenalty", 
+                          min: -2, 
+                          max: 2, 
+                          step: 0.1,
+                          tooltip: "Penalizes frequent tokens" 
+                        },
+                      ].map((param) => (
+                        <div key={param.key} className="grid gap-2">
+                          <div className="flex justify-between">
+                            <label className="text-sm font-medium">
+                              {param.label}
+                              <span className="ml-2 text-xs text-gray-500">
+                                ({advancedParams[param.key]})
+                              </span>
+                            </label>
+                            <span className="text-xs text-gray-500">{param.tooltip}</span>
+                          </div>
+                          <Slider
+                            value={[advancedParams[param.key]]}
+                            min={param.min}
+                            max={param.max}
+                            step={param.step}
+                            onValueChange={([value]) => 
+                              setAdvancedParams(prev => ({
+                                ...prev,
+                                [param.key]: value
+                              }))
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
               <CardContent className="flex-grow p-2">
                 <div className="h-full flex flex-col">
