@@ -4,7 +4,7 @@ import ChatPage from './pages/ChatPage';
 import { Button } from "./components/ui/button";
 
 function App() {
-  const [currentView, setCurrentView] = useState('summary');
+  const [currentView, setCurrentView] = useState('chat');
 
   return (
     <div>

@@ -735,3 +735,48 @@ async def get_current_model(request: ModelInfoRequest) -> Dict[str, str]:
     except httpx.HTTPError as e:
         logger.error(f"LLM service error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch model info")
+
+
+class CancelRequest(BaseModel):
+    api_endpoint: str
+    request_id: str
+
+
+@app.post("/chat/cancel")
+async def cancel_chat(request: CancelRequest):
+    try:
+        api_endpoint = request.api_endpoint.strip()
+        cancel_url = f"{api_endpoint.rstrip('/')}/cancel"
+
+        logger.info(f"Attempting to cancel request {request.request_id}")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                cancel_url,
+                headers={
+                    "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+                    "Content-Type": "application/json",
+                },
+                json={"request_id": request.request_id},
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Failed to cancel request: {response.text}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to cancel request: {response.text}",
+                )
+
+            logger.info(f"Successfully cancelled request {request.request_id}")
+            return response.json()
+
+    except httpx.TimeoutException:
+        logger.error("Timeout while attempting to cancel request")
+        raise HTTPException(
+            status_code=504, detail="Timeout while attempting to cancel request"
+        )
+    except Exception as e:
+        logger.error(f"Error cancelling request: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to cancel request: {str(e)}"
+        )

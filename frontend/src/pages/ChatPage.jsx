@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Input } from "../components/ui/input";
 import { ScrollArea } from "../components/ui/scroll-area";
-import { Wand2, CornerDownLeft, Settings2, EyeIcon, EyeOffIcon } from "lucide-react";
+import { Wand2, CornerDownLeft, Settings2, EyeIcon, EyeOffIcon, X } from "lucide-react";
 import ModelSelector from "../components/ModelSelector";
 import {
   Dialog,
@@ -53,6 +53,8 @@ function ChatPage() {
   const [wordAnalysis, setWordAnalysis] = useState([]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisCache, setAnalysisCache] = useState(new Map());
+  const [generationTime, setGenerationTime] = useState(null);
+  const [currentRequestId, setCurrentRequestId] = useState(null);
 
   // Save API endpoint to localStorage whenever it changes
   useEffect(() => {
@@ -73,11 +75,12 @@ function ChatPage() {
 
     setIsLoading(true);
     setError(null);
-    setSummary(''); // Clear existing summary
-    setCompletionTokens(0); // Reset tokens
+    setSummary('');
+    setCompletionTokens(0);
+    setGenerationTime(null);
+    const startTime = Date.now();
 
     try {
-      
       const response = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: {
@@ -107,32 +110,33 @@ function ChatPage() {
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          setGenerationTime(Date.now() - startTime);
+          break;
+        }
         
         const chunk = decoder.decode(value);
         const lines = chunk.split('\n');
         
         for (const line of lines) {
           if (line.startsWith('data: ')) {
-            // Handle completion message
-            if (line.includes('"finish_reason":"stop"')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.usage?.completion_tokens) {
-                  setCompletionTokens(data.usage.completion_tokens);
-                }
-                continue;
-              } catch (e) {
-                console.error('Error parsing completion data:', e);
-              }
-            }
-
-            // Handle regular content
             try {
               const data = JSON.parse(line.slice(6));
+              
+              // Extract request_id if present
+              if (data.uid && !currentRequestId) {
+                setCurrentRequestId(data.uid);
+              }
+
               if (data.error) {
                 setError(data.error);
                 break;
+              }
+
+              // Handle completion message
+              if (data.finish_reason === "stop" && data.usage?.completion_tokens) {
+                setCompletionTokens(data.usage.completion_tokens);
+                continue;
               }
 
               // Handle OpenAI streaming format
@@ -152,6 +156,29 @@ function ChatPage() {
       console.error('Error generating summary:', err);
     } finally {
       setIsLoading(false);
+      setCurrentRequestId(null);
+    }
+  };
+
+  const handleCancelGeneration = async () => {
+    if (!currentRequestId || !apiEndpoint) return;
+    
+    try {
+      await fetch(`${API_URL}/chat/cancel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          api_endpoint: apiEndpoint,
+          request_id: currentRequestId
+        })
+      });
+      
+      setIsLoading(false);
+      setCurrentRequestId(null);
+    } catch (error) {
+      console.error('Error cancelling generation:', error);
     }
   };
 
@@ -275,9 +302,9 @@ function ChatPage() {
       <main className="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4">
         <div className="flex flex-col h-[calc(100vh-2rem)] space-y-4">
           {/* Top section */}
-          <div className="flex flex-col md:flex-row gap-4 h-[42vh]">
+          <div className="flex flex-col lg:flex-row gap-4 h-auto lg:h-[42vh]">
             {/* Input Card */}
-            <Card className="flex-[3] flex flex-col relative">
+            <Card className="flex-1 lg:flex-[3] flex flex-col relative">
               <CardHeader className="py-2 border-b">
                 <CardTitle className="text-xl font-semibold">Input Text</CardTitle>
               </CardHeader>
@@ -300,7 +327,7 @@ function ChatPage() {
             </Card>
 
             {/* Parameters Card */}
-            <Card className="flex-[2] flex flex-col">
+            <Card className="flex-1 lg:flex-[2] flex flex-col">
               <CardHeader className="py-2 border-b flex flex-row items-center justify-between">
                 <CardTitle className="text-lg font-semibold">Parameters</CardTitle>
                 <Dialog>
@@ -394,22 +421,26 @@ function ChatPage() {
               </CardHeader>
               <CardContent className="flex-grow p-2">
                 <div className="h-full flex flex-col">
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {/* API Endpoint */}
-                    <div>
-                      <label className="text-xs font-medium text-gray-700 mb-1 block">API Endpoint</label>
+                    <div className="w-full">
+                      <label className="text-xs font-medium text-gray-700 mb-1 block">
+                        API Endpoint
+                      </label>
                       <Input
                         type="url"
                         placeholder="Enter LLM API endpoint URL"
                         value={apiEndpoint}
                         onChange={(e) => setApiEndpoint(e.target.value)}
-                        className="h-7 text-xs"
+                        className="h-7 text-xs w-full"
                       />
                     </div>
 
                     {/* Model Selection */}
-                    <div>
-                      <label className="text-xs font-medium text-gray-700 mb-1 block">Model</label>
+                    <div className="w-full">
+                      <label className="text-xs font-medium text-gray-700 mb-1 block">
+                        Model
+                      </label>
                       <ModelSelector 
                         apiEndpoint={apiEndpoint}
                         onModelChange={handleModelChange}
@@ -417,8 +448,10 @@ function ChatPage() {
                     </div>
 
                     {/* Type Selection */}
-                    <div>
-                      <label className="text-xs font-medium text-gray-700 mb-1 block">Type</label>
+                    <div className="w-full">
+                      <label className="text-xs font-medium text-gray-700 mb-1 block">
+                        Type
+                      </label>
                       <div className="flex gap-1.5">
                         <Button
                           variant={isBullet ? "default" : "outline"}
@@ -440,26 +473,40 @@ function ChatPage() {
                     </div>
 
                     {/* Length Selection */}
-                    <div>
-                      <label className="text-xs font-medium text-gray-700 mb-1 block">Length</label>
-                      <div className="flex gap-1">
-                        {[
-                          ['ultra_concise', 'Very Short'],
-                          ['concise', 'Short'],
-                          ['medium', 'Medium'],
-                          ['long', 'Long']
-                        ].map(([value, label]) => (
-                          <Button
-                            key={value}
-                            variant={category === value ? "default" : "outline"}
-                            onClick={() => setCategory(value)}
-                            className="flex-1 h-7 text-xs px-1"
-                            size="sm"
-                          >
-                            {label}
-                          </Button>
-                        ))}
+                    <div className="w-full">
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="text-xs font-medium text-gray-700">Length</label>
+                        <span className="text-xs text-gray-500">
+                          {category === 'ultra_concise' ? 'Ultra Short' :
+                           category === 'concise' ? 'Short' :
+                           category === 'short' ? 'Brief' :
+                           category === 'medium' ? 'Medium' :
+                           category === 'long' ? 'Long' : 'Detailed'}
+                        </span>
                       </div>
+                      <Slider
+                        value={[
+                          category === 'ultra_concise' ? 0 :
+                          category === 'concise' ? 20 :
+                          category === 'short' ? 40 :
+                          category === 'medium' ? 60 :
+                          category === 'long' ? 80 : 100
+                        ]}
+                        min={0}
+                        max={100}
+                        step={20}
+                        className="my-2"
+                        onValueChange={([value]) => {
+                          setCategory(
+                            value === 0 ? 'ultra_concise' :
+                            value === 20 ? 'concise' :
+                            value === 40 ? 'short' :
+                            value === 60 ? 'medium' :
+                            value === 80 ? 'long' : 'detailed'
+                          );
+                        }}
+                      />
+                    
                     </div>
                   </div>
                 </div>
@@ -468,7 +515,7 @@ function ChatPage() {
           </div>
 
           {/* Summary Card */}
-          <Card className="h-[42vh] flex flex-col">
+          <Card className="h-auto lg:h-[42vh] flex flex-col">
             <CardHeader className="py-2 border-b">
               <div className="flex justify-between items-center">
                 <CardTitle className="text-xl font-semibold">Generated Summary</CardTitle>
@@ -526,7 +573,10 @@ function ChatPage() {
                 />
               )}
               <div className="absolute bottom-2 right-2 text-xs text-gray-400">
-                {countWords(summary)} words • {completionTokens} tokens
+                {countWords(summary)} words
+                {!isLoading && completionTokens > 0 && generationTime && (
+                  <> • {completionTokens} tokens • {(generationTime / 1000).toFixed(1)}s • {Math.round(completionTokens / (generationTime / 1000))} tokens/s</>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -537,15 +587,26 @@ function ChatPage() {
               Compression: {inputText ? Math.round((1 - countWords(summary) / countWords(inputText)) * 100) : 0}%
             </div>
             
-            {/* Generate Button - Now in the center of footer */}
-            <Button 
-              onClick={handleGenerateSummary}
-              className="w-48 h-10 text-sm gap-2"
-              disabled={isLoading || !apiEndpoint || !inputText.trim()}
-            >
-              {isLoading ? "Generating..." : "Generate"}
-              <CornerDownLeft className="w-4 h-4" />
-            </Button>
+            <div className="flex gap-2">
+              <Button 
+                onClick={handleGenerateSummary}
+                className="w-48 h-10 text-sm gap-2"
+                disabled={!apiEndpoint || !inputText.trim() || isLoading}
+              >
+                Generate
+                <CornerDownLeft className="w-4 h-4" />
+              </Button>
+
+              {isLoading && (
+                <Button 
+                  onClick={handleCancelGeneration}
+                  className="h-10 text-sm gap-2 bg-red-600 hover:bg-red-700"
+                >
+                  Cancel
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
 
             <Button
               onClick={() => {
