@@ -536,10 +536,10 @@ class ChatRequest(BaseModel):
     api_endpoint: Optional[str] = None
     is_bullet: bool
     summary_category: str
-    temperature: float = Field(default=0.3, ge=0.0, le=2.0)
-    max_tokens: int = Field(default=2048, ge=1)
+    temperature: float = Field(default=0.4, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=600, ge=1)
     top_k: int = Field(
-        default=50,
+        default=30,
         ge=0,
         description="Limits the number of tokens to consider for sampling",
     )
@@ -547,7 +547,7 @@ class ChatRequest(BaseModel):
         default=0.9, ge=0.0, le=1.0, description="Nucleus sampling threshold"
     )
     frequency_penalty: float = Field(
-        default=0.0, ge=-2.0, le=2.0, description="Penalizes frequent tokens"
+        default=0.2, ge=-2.0, le=2.0, description="Penalizes frequent tokens"
     )
 
 
