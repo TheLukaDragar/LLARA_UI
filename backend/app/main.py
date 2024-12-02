@@ -92,7 +92,7 @@ class Splitter:
     def __init__(self, max_tokens=MAX_TOKENS):
         print("Splitter init")
         start_time = time.time()
-        self.tokenizer = Tokenizer("/home/jakob/llara/checkpoints/gordicaleksa/SlovenianGPT")
+        self.tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
         self.max_tokens = max_tokens
         print(f"Tokenizer init took {time.time() - start_time} seconds")
 
