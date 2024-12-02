@@ -16,3 +16,7 @@ pytest-cov==4.1.0
 celery==5.3.6
 redis==5.0.1
 classla>=1.1.0  # Slovenian NLP toolkit 
+
+transformers
+langchain
+datasets

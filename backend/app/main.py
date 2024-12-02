@@ -23,6 +23,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from transformers import AutoTokenizer
+MAX_TOKENS = 2000
 
 # Set up logging configuration
 logging.basicConfig(
@@ -84,6 +87,27 @@ OPENAI_API_BASE = "https://api.openai.com/v1/chat/completions"
 app.model_switch_lock = Lock()
 app.current_model = "gpt-3.5-turbo"  # Default model
 
+# Add the Splitter class
+class Splitter:
+    def __init__(self, max_tokens=MAX_TOKENS):
+        print("Splitter init")
+        start_time = time.time()
+        self.tokenizer =  AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+        self.max_tokens = max_tokens
+        print(f"Tokenizer init took {time.time() - start_time} seconds")
+
+        def token_length_function(text):
+            tokens = self.tokenizer.encode(text, return_tensors='pt')
+            return tokens.size(1)
+
+        self.chunk_splitter  = RecursiveCharacterTextSplitter(
+                chunk_size=self.max_tokens,
+                chunk_overlap=200,
+                separators=["\n\n", "\n", ".", "?", "!"],
+                length_function=token_length_function)
+
+    def split(self, text):
+        return self.chunk_splitter.split_text(text)
 
 @app.on_event("startup")
 async def startup_event():
@@ -479,62 +503,47 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def generate_chat_response(request: ChatRequest):
-    try:
+    try:                
+        api_endpoint = request.api_endpoint or OPENAI_API_BASE
+        api_endpoint = api_endpoint.rstrip("/") + "/v1/chat/completions"
         # Log the incoming request details
         logger.info("Received chat request:")
         logger.info(f"Input text: {request.input_text}")
-        logger.info(f"API endpoint: {request.api_endpoint}")
-        logger.info(f"Is bullet: {request.is_bullet}")
-        logger.info(f"Summary category: {request.summary_category}")
-        logger.info(f"Temperature: {request.temperature}")
-        logger.info(f"Max tokens: {request.max_tokens}")
-        logger.info(f"Top K: {request.top_k}")
-        logger.info(f"Top P: {request.top_p}")
-        logger.info(f"Frequency penalty: {request.frequency_penalty}")
 
-        # Use the default OpenAI endpoint if none provided
-        api_endpoint = request.api_endpoint or OPENAI_API_BASE
-        # add v1/chat/completions join url
-        api_endpoint = api_endpoint.rstrip("/") + "/v1/chat/completions"
-        logger.info(f"Using API endpoint: {api_endpoint}")
-
-        instruction_prefix = get_instruction_prefix(
-            request.is_bullet, request.summary_category
-        )
-
-        print(f"Instruction prefix: {instruction_prefix}")
-
-        # Prepare the OpenAI-compatible payload with the provided parameters
-        payload = {
-            "model": app.current_model,  # Use the current model instead of hardcoded value
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"{instruction_prefix}\n\n{request.input_text}",
-                }
-            ],
-            "temperature": request.temperature,
-            "max_tokens": request.max_tokens,
-            "top_k": request.top_k,
-            "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "stream": True,  # Enable streaming
-        }
-        logger.debug(f"Prepared payload: {json.dumps(payload, indent=2)}")
-
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logger.error("OpenAI API key not found in environment variables")
-            raise HTTPException(status_code=500, detail="OpenAI API key not configured")
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        logger.debug("Request headers prepared")
+        # Initialize the Splitter
+        splitter = Splitter()
+        chunks = splitter.split(request.input_text)
 
         async def generate():
-            try:
+            for chunk in chunks:
+                # Prepare the OpenAI-compatible payload with the provided parameters
+                payload = {
+                    "model": app.current_model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": f"{chunk}",
+                        }
+                    ],
+                    "temperature": request.temperature,
+                    "max_tokens": request.max_tokens,
+                    "top_k": request.top_k,
+                    "top_p": request.top_p,
+                    "frequency_penalty": request.frequency_penalty,
+                    "stream": True,  # Enable streaming
+                }
+
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    logger.error("OpenAI API key not found in environment variables")
+                    raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                }
+
+
                 logger.info("Starting streaming request to OpenAI API")
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     async with client.stream(
@@ -544,22 +553,15 @@ async def generate_chat_response(request: ChatRequest):
                         headers=headers,
                     ) as response:
                         if response.status_code != 200:
-                            error_msg = await response.text()
+                            error_msg = await response.text()  # Read the error message
                             logger.error(f"API Error: {error_msg}")
                             yield f"data: {json.dumps({'error': f'API Error: {error_msg}'})}\n\n"
                             return
 
                         logger.info("Successfully connected to API, starting stream")
                         async for line in response.aiter_lines():
-                            if line:
-                                if line.startswith("data: "):
-                                    yield f"{line}\n\n"
-            except httpx.ConnectError as e:
-                logger.error(f"Connection error: {str(e)}")
-                yield f"data: {json.dumps({'error': 'Failed to connect to API service'})}\n\n"
-            except Exception as e:
-                logger.error(f"Streaming error: {str(e)}")
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                            if line and line.startswith("data: "):
+                                yield f"{line}\n\n"
 
         logger.info("Initiating streaming response")
         return StreamingResponse(
