@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from transformers import AutoTokenizer
-MAX_TOKENS = 2000
+MAX_TOKENS = 3000
 
 # Set up logging configuration
 logging.basicConfig(
@@ -92,22 +92,74 @@ class Splitter:
     def __init__(self, max_tokens=MAX_TOKENS):
         print("Splitter init")
         start_time = time.time()
-        self.tokenizer =  AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+        self.tokenizer = Tokenizer("/home/jakob/llara/checkpoints/gordicaleksa/SlovenianGPT")
         self.max_tokens = max_tokens
         print(f"Tokenizer init took {time.time() - start_time} seconds")
 
         def token_length_function(text):
-            tokens = self.tokenizer.encode(text, return_tensors='pt')
-            return tokens.size(1)
+            tokens = self.tokenizer.encode(text)
+            return tokens.size(0)
 
-        self.chunk_splitter  = RecursiveCharacterTextSplitter(
-                chunk_size=self.max_tokens,
-                chunk_overlap=200,
-                separators=["\n\n", "\n", ".", "?", "!"],
-                length_function=token_length_function)
+        self.chunk_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.max_tokens,
+            chunk_overlap=200,
+            separators=[".", "?", "!", "\n", "\n\n"],
+            length_function=token_length_function
+        )
+
+    def get_last_speaker(self, text):
+        """Extract the last speaker from a chunk of text."""
+        lines = text.split('\n')
+        for line in reversed(lines):
+            match = re.match(r'^([^:]+):', line.strip())
+            if match:
+                return match.group(1)
+        return None
+
+    def get_first_non_speaker_line(self, text):
+        """Find the first line that doesn't start with a speaker name."""
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            if line.strip() and not re.match(r'^[^:]+:', line.strip()):
+                return i
+        return None
 
     def split(self, text):
-        return self.chunk_splitter.split_text(text)
+        # First use the chunk splitter
+        initial_chunks = self.chunk_splitter.split_text(text)
+        
+        # Process chunks to fix dialogue continuity
+        processed_chunks = []
+        last_speaker = None
+        
+        for i, chunk in enumerate(initial_chunks):
+            chunk_lines = chunk.split('\n')
+            
+            # Skip empty chunks
+            if not any(line.strip() for line in chunk_lines):
+                continue
+            
+            # Check if the chunk starts with a speaker
+            first_line = chunk_lines[0].strip()
+            has_speaker = bool(re.match(r'^[^:]+:', first_line))
+            
+            # If no speaker and we have a last speaker, add it
+            if not has_speaker and last_speaker:
+                # Find the first non-speaker line
+                first_non_speaker = self.get_first_non_speaker_line(chunk)
+                if first_non_speaker is not None:
+                    # Insert the last speaker before the first non-speaker line
+                    chunk_lines.insert(first_non_speaker, f"{last_speaker}:")
+                    chunk = '\n'.join(chunk_lines)
+            
+            # Update last speaker from this chunk
+            new_last_speaker = self.get_last_speaker(chunk)
+            if new_last_speaker:
+                last_speaker = new_last_speaker
+            
+            processed_chunks.append(chunk)
+        
+        return processed_chunks
 
 @app.on_event("startup")
 async def startup_event():
