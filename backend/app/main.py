@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from transformers import AutoTokenizer
+import re
 MAX_TOKENS = 3000
 
 # Set up logging configuration
@@ -98,7 +99,7 @@ class Splitter:
 
         def token_length_function(text):
             tokens = self.tokenizer.encode(text)
-            return tokens.size(0)
+            return len(tokens)
 
         self.chunk_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.max_tokens,
@@ -125,10 +126,7 @@ class Splitter:
         return None
 
     def split(self, text):
-        # First use the chunk splitter
         initial_chunks = self.chunk_splitter.split_text(text)
-        
-        # Process chunks to fix dialogue continuity
         processed_chunks = []
         last_speaker = None
         
@@ -569,12 +567,14 @@ async def generate_chat_response(request: ChatRequest):
         async def generate():
             for chunk in chunks:
                 # Prepare the OpenAI-compatible payload with the provided parameters
+                instruction_prefix = get_instruction_prefix(request.is_bullet, request.summary_category)
+                
                 payload = {
                     "model": app.current_model,
                     "messages": [
                         {
                             "role": "user",
-                            "content": f"{chunk}",
+                            "content": f"{instruction_prefix}\n{chunk}",
                         }
                     ],
                     "temperature": request.temperature,
